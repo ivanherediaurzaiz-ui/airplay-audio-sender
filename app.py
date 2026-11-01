@@ -11,6 +11,7 @@ AirPlay/RAOP) sin instalar nada ni usar un driver de audio virtual.
 """
 
 import asyncio
+import sys
 import threading
 
 import numpy as np
@@ -164,8 +165,18 @@ async def main():
 
 
 if __name__ == "__main__":
+    # En Windows, el bucle de red por defecto (Proactor) puede dar el error
+    # WinError 1450 al enviar audio por UDP. El bucle "Selector" lo evita.
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nDetenido por el usuario.")
+    except BaseException:
+        import traceback
+        print("\n" + "=" * 60)
+        print("OCURRIO UN ERROR. Copia todo este texto y mandalo:")
+        print("=" * 60)
+        traceback.print_exc()
     input("\nPresiona Enter para salir...")
