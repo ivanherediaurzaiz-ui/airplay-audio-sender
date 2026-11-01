@@ -30,7 +30,7 @@ import numpy as np
 import soundcard as sc
 
 import pyatv
-from pyatv.const import Protocol
+from pyatv.const import Protocol, PairingRequirement
 from pyatv.storage.file_storage import FileStorage
 
 from live_wav_stream import LiveWavStream
@@ -44,7 +44,7 @@ BYTES_PER_SAMPLE = 2    # convertimos a PCM de 16 bits antes de empaquetar
 
 def audio_capture_thread(live_stream: LiveWavStream, stop_event: threading.Event) -> None:
     """Hilo que captura el audio de salida de Windows (loopback) y lo empuja
-    al flujo en vivo que pyatv esta leyendo."""
+    al flujo en vivo que tv esta leyendo."""
     try:
         speaker = sc.default_speaker()
         mic = sc.get_microphone(speaker.id, include_loopback=True)
@@ -86,6 +86,18 @@ async def ensure_paired(config, loop, storage) -> bool:
     if service.credentials:
         print("Ya emparejado anteriormente (usando credenciales guardadas).")
         return True
+       if service.pairing in (PairingRequirement.NotNeeded, PairingRequirement.Optional):
+           print("Este dispositivo no necesita emparejamiento.")
+           return True
+
+       if service.pairing in (PairingRequirement.Disabled, PairingRequirement.Unsupported):
+           print(
+               "El HomePod no permite emparejar desde este programa.\n"
+               "En la app Casa (iPhone): mantén presionado el HomePod > Ajustes > "
+               "'Permitir acceso al altavoz' y elige 'Todos' o "
+               "'Cualquiera en la misma red'."
+           )
+           return False
 
     print(f"\nEmparejando con '{config.name}' por primera vez...")
     pairing = await pyatv.pair(config, Protocol.RAOP, loop, storage=storage)
