@@ -3,27 +3,14 @@ AirPlay Audio Sender
 ====================
 
 Envia el audio del sistema de Windows a un HomePod (u otro receptor
-AirPlay/RAOP) sin necesidad de instalar nada ni de usar un driver de audio
-virtual.
+AirPlay/RAOP) sin instalar nada ni usar un driver de audio virtual.
 
-Como funciona:
-  1. Captura el audio que Windows ya esta reproduciendo, usando la API nativa
-     WASAPI en modo "loopback" (a traves de la libreria `soundcard`). Esto no
-     requiere ningun driver adicional: es una funcion del propio Windows.
-  2. Empaqueta ese audio como un flujo WAV "en vivo" (ver live_wav_stream.py).
-  3. Usa `pyatv` (libreria de codigo abierto para AirPlay/RAOP) para
-     descubrir el HomePod en la red, emparejarse una sola vez, y transmitirle
-     el audio en tiempo real.
-
-Uso:
-    python app.py
-
-Compilado como .exe portable con PyInstaller, se ejecuta igual, sin consola
-de Python visible (ver README.md para instrucciones de compilacion).
+  1. Captura el audio de Windows con WASAPI en modo loopback (soundcard).
+  2. Lo empaqueta como un flujo WAV "en vivo" (live_wav_stream.py).
+  3. Usa pyatv para descubrir el HomePod y transmitirle el audio.
 """
 
 import asyncio
-import sys
 import threading
 
 import numpy as np
@@ -35,21 +22,19 @@ from pyatv.storage.file_storage import FileStorage
 
 from live_wav_stream import LiveWavStream
 
-# --- Configuracion de captura de audio ---
-SAMPLE_RATE = 48000     # frecuencia a la que capturamos de Windows
+SAMPLE_RATE = 48000
 CHANNELS = 2
-BLOCKSIZE = 960         # ~20ms por bloque a 48000Hz: buen balance latencia/CPU
-BYTES_PER_SAMPLE = 2    # convertimos a PCM de 16 bits antes de empaquetar
+BLOCKSIZE = 960
+BYTES_PER_SAMPLE = 2
 
 
-def audio_capture_thread(live_stream: LiveWavStream, stop_event: threading.Event) -> None:
-    """Hilo que captura el audio de salida de Windows (loopback) y lo empuja
-    al flujo en vivo que tv esta leyendo."""
+def audio_capture_thread(live_stream, stop_event):
+    """Captura el audio de salida de Windows (loopback) y lo empuja al flujo."""
     try:
         speaker = sc.default_speaker()
         mic = sc.get_microphone(speaker.id, include_loopback=True)
-    except Exception as exc:  # pragma: no cover - depende del hardware real
-        print(f"\n[ERROR] No se pudo abrir el dispositivo de audio para captura: {exc}")
+    except Exception as exc:
+        print(f"\n[ERROR] No se pudo abrir el dispositivo de audio: {exc}")
         live_stream.stop()
         return
 
@@ -58,10 +43,10 @@ def audio_capture_thread(live_stream: LiveWavStream, stop_event: threading.Event
     try:
         with mic.recorder(samplerate=SAMPLE_RATE, channels=CHANNELS, blocksize=BLOCKSIZE) as rec:
             while not stop_event.is_set():
-                data = rec.record(numframes=BLOCKSIZE)  # float32, forma (frames, canales)
+                data = rec.record(numframes=BLOCKSIZE)
                 pcm16 = np.clip(data * 32767.0, -32768, 32767).astype("<i2")
                 live_stream.push(pcm16.tobytes())
-    except Exception as exc:  # pragma: no cover - depende del hardware real
+    except Exception as exc:
         print(f"\n[ERROR] Fallo durante la captura de audio: {exc}")
     finally:
         live_stream.stop()
@@ -70,14 +55,11 @@ def audio_capture_thread(live_stream: LiveWavStream, stop_event: threading.Event
 async def discover_devices(storage):
     loop = asyncio.get_event_loop()
     print("Buscando dispositivos AirPlay en la red (5 segundos)...")
-    devices = await pyatv.scan(loop, protocol={Protocol.RAOP}, storage=storage)
-    return devices
+    return await pyatv.scan(loop, protocol={Protocol.RAOP}, storage=storage)
 
 
-async def ensure_paired(config, loop, storage) -> bool:
-    """Empareja con el dispositivo si todavia no tenemos credenciales
-    guardadas de una vez anterior. Devuelve True si quedo listo para
-    transmitir."""
+async def ensure_paired(config, loop, storage):
+    """Empareja solo si hace falta. Devuelve True si se puede transmitir."""
     service = config.get_service(Protocol.RAOP)
     if service is None:
         print("Este dispositivo no soporta el protocolo de audio RAOP.")
@@ -86,27 +68,26 @@ async def ensure_paired(config, loop, storage) -> bool:
     if service.credentials:
         print("Ya emparejado anteriormente (usando credenciales guardadas).")
         return True
-       if service.pairing in (PairingRequirement.NotNeeded, PairingRequirement.Optional):
-           print("Este dispositivo no necesita emparejamiento.")
-           return True
 
-       if service.pairing in (PairingRequirement.Disabled, PairingRequirement.Unsupported):
-           print(
-               "El HomePod no permite emparejar desde este programa.\n"
-               "En la app Casa (iPhone): mantén presionado el HomePod > Ajustes > "
-               "'Permitir acceso al altavoz' y elige 'Todos' o "
-               "'Cualquiera en la misma red'."
-           )
-           return False
+    if service.pairing in (PairingRequirement.NotNeeded, PairingRequirement.Optional):
+        print("Este dispositivo no necesita emparejamiento.")
+        return True
+
+    if service.pairing in (PairingRequirement.Disabled, PairingRequirement.Unsupported):
+        print(
+            "El HomePod no permite emparejar desde este programa.\n"
+            "En la app Casa (iPhone): manten presionado el HomePod > Ajustes > "
+            "'Permitir acceso al altavoz' y elige 'Todos' o "
+            "'Cualquiera en la misma red'."
+        )
+        return False
 
     print(f"\nEmparejando con '{config.name}' por primera vez...")
     pairing = await pyatv.pair(config, Protocol.RAOP, loop, storage=storage)
     try:
         await pairing.begin()
         if pairing.device_provides_pin:
-            pin = input(
-                "Introduce el codigo PIN que muestra o anuncia el HomePod: "
-            ).strip()
+            pin = input("Introduce el PIN que muestra el dispositivo: ").strip()
             pairing.pin(pin)
         else:
             pairing.pin(1234)
@@ -115,14 +96,13 @@ async def ensure_paired(config, loop, storage) -> bool:
         if pairing.has_paired:
             print("Emparejamiento exitoso.")
             return True
-        else:
-            print("El emparejamiento no se completo. Intenta de nuevo.")
-            return False
+        print("El emparejamiento no se completo. Intenta de nuevo.")
+        return False
     finally:
         await pairing.close()
 
 
-async def stream_to_device(config, loop, stop_event: threading.Event) -> None:
+async def stream_to_device(config, loop, stop_event):
     atv = await pyatv.connect(config, loop)
     live_stream = LiveWavStream(SAMPLE_RATE, CHANNELS, BYTES_PER_SAMPLE)
 
@@ -143,7 +123,7 @@ async def stream_to_device(config, loop, stop_event: threading.Event) -> None:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
-async def main() -> None:
+async def main():
     loop = asyncio.get_event_loop()
     storage = FileStorage.default_storage(loop)
     await storage.load()
@@ -153,8 +133,7 @@ async def main() -> None:
         print(
             "\nNo se encontro ningun dispositivo AirPlay.\n"
             "Verifica que el HomePod y esta computadora esten en la misma red Wi-Fi,"
-            " y que ningun firewall este bloqueando el descubrimiento (puerto UDP 5353,"
-            " mDNS/Bonjour)."
+            " y que ningun firewall bloquee el descubrimiento (UDP 5353, mDNS)."
         )
         return
 
@@ -164,7 +143,7 @@ async def main() -> None:
 
     while True:
         try:
-            idx = int(input("\nElige el numero del dispositivo al que quieres transmitir: ").strip())
+            idx = int(input("\nElige el numero del dispositivo: ").strip())
             config = devices[idx]
             break
         except (ValueError, IndexError):
